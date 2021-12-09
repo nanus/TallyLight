@@ -1,3 +1,5 @@
+//https://github.com/josephdadams/TallyArbiter-M5StickCListener/blob/master/tallyarbiter-m5stickc.ino
+
 #include <WebSocketsClient.h>
 #include <SocketIOclient.h>
 #include <Arduino_JSON.h>
@@ -29,12 +31,6 @@ Adafruit_NeoPixel strip(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
 
 #define TALLY_EXTRA_OUTPUT false
 
-#if TALLY_EXTRA_OUTPUT
-const int led_program = 10;
-const int led_preview = 26; //OPTIONAL Led for preview on pin G26
-const int led_aux = 36;     //OPTIONAL Led for aux on pin G36
-#endif
-
 //Tally Arbiter Server
 char tallyarbiter_host[40] = "192.168.88.224"; //IP address of the Tally Arbiter Server
 char tallyarbiter_port[6] = "4455";
@@ -42,12 +38,6 @@ char tallyarbiter_port[6] = "4455";
 /* END OF USER CONFIG */
 
 Preferences preferences;
-
-String prevType = ""; // reduce display flicker by storing previous state
-
-String actualType = "";
-String actualColor = "";
-int actualPriority = 0;
 
 //Tally Arbiter variables
 SocketIOclient socket;
@@ -59,9 +49,15 @@ String DeviceName = "Unassigned";
 
 //General Variables
 bool networkConnected = false;
+bool mode_preview = false;
+bool mode_program = false;
 
 #define WHITE strip.Color(255, 255, 255)
 #define BLACK strip.Color(0, 0, 0)
+#define RED strip.Color(255, 0, 0)
+#define GREEN strip.Color(0, 255, 0)
+#define BLUE strip.Color(0, 0, 255)
+#define YELLOW strip.Color(255, 255, 0)
 
 WiFiManager wm; // global wm instance
 WiFiManagerParameter custom_field; // global param ( for non blocking w params )
@@ -102,7 +98,7 @@ void setup() {
   strip.begin();           // INITIALIZE NeoPixel strip object (REQUIRED)
   strip.show();            // Turn OFF all pixels ASAP
   strip.setBrightness(BRIGHTNESS);
-  setColor(strip.Color(0, 0, 255));
+  setColor(BLUE);
   logger("Listener device name: " + listenerDeviceName, "info");
 
   preferences.begin("tally-arbiter", false);
@@ -164,18 +160,7 @@ void setup() {
     });
 
   ArduinoOTA.begin();
-
-  #if TALLY_EXTRA_OUTPUT
-  // Enable interal led for program trigger
-  pinMode(led_program, OUTPUT);
-  digitalWrite(led_program, HIGH);
-  pinMode(led_preview, OUTPUT);
-  digitalWrite(led_preview, HIGH);
-  pinMode(led_aux, OUTPUT);
-  digitalWrite(led_aux, HIGH);
-  #endif
   connectToServer();
-
 }
 
 void loop() {
@@ -332,6 +317,19 @@ void connectToServer() {
   socket.begin(tallyarbiter_host, atol(tallyarbiter_port));
 }
 
+void socket_Connected(const char * payload, size_t length) {
+  logger("Connected to Tally Arbiter server.", "info");
+  logger("DeviceId: " + DeviceId, "info-quiet");
+  String deviceObj = "{\"deviceId\": \"" + DeviceId + "\", \"listenerType\": \"m5-stickc\"}";
+
+  char charDeviceObj[1024];
+  strcpy(charDeviceObj, deviceObj.c_str());
+  ws_emit("bus_options");
+  ws_emit("device_listen_m5", charDeviceObj);
+
+  setColor(BLACK);
+}
+
 void socket_event(socketIOmessageType_t type, uint8_t * payload, size_t length) {
   switch (type) {
     case sIOtype_CONNECT:
@@ -376,15 +374,6 @@ void socket_event(socketIOmessageType_t type, uint8_t * payload, size_t length) 
 
       break;
   }
-}
-
-void socket_Connected(const char * payload, size_t length) {
-  logger("Connected to Tally Arbiter server.", "info");
-  logger("DeviceId: " + DeviceId, "info-quiet");
-  String deviceObj = "{\"deviceId\": \"" + DeviceId + "\", \"listenerType\": \"" + listenerDeviceName.c_str() + "\", \"canBeReassigned\": true, \"canBeFlashed\": true, \"supportsChat\": true }";
-  char charDeviceObj[1024];
-  strcpy(charDeviceObj, deviceObj.c_str());
-  ws_emit("listenerclient_connect", charDeviceObj);
 }
 
 void socket_Flash() {
@@ -451,20 +440,25 @@ void socket_Reassign(String payload) {
 }
 
 void processTallyData() {
-  bool typeChanged = false;
   for (int i = 0; i < DeviceStates.length(); i++) {
-    if (DeviceStates[i]["sources"].length() > 0) {
-      typeChanged = true;
-      actualType = getBusTypeById(JSON.stringify(DeviceStates[i]["busId"]));
-      actualColor = getBusColorById(JSON.stringify(DeviceStates[i]["busId"]));
-      actualPriority = getBusPriorityById(JSON.stringify(DeviceStates[i]["busId"]));
+    if (getBusTypeById(JSON.stringify(DeviceStates[i]["busId"])) == "\"preview\"") {
+      if (DeviceStates[i]["sources"].length() > 0) {
+        mode_preview = true;
+      }
+      else {
+        mode_preview = false;
+      }
+    }
+    if (getBusTypeById(JSON.stringify(DeviceStates[i]["busId"])) == "\"program\"") {
+      if (DeviceStates[i]["sources"].length() > 0) {
+        mode_program = true;
+      }
+      else {
+        mode_program = false;
+      }
     }
   }
-  if(!typeChanged) {
-    actualType = "";
-    actualColor = "";
-    actualPriority = 0;
-  }
+
   evaluateMode();
 }
 
@@ -476,26 +470,6 @@ String getBusTypeById(String busId) {
   }
 
   return "invalid";
-}
-
-String getBusColorById(String busId) {
-  for (int i = 0; i < BusOptions.length(); i++) {
-    if (JSON.stringify(BusOptions[i]["id"]) == busId) {
-      return JSON.stringify(BusOptions[i]["color"]);
-    }
-  }
-
-  return "invalid";
-}
-
-int getBusPriorityById(String busId) {
-  for (int i = 0; i < BusOptions.length(); i++) {
-    if (JSON.stringify(BusOptions[i]["id"]) == busId) {
-      return (int) JSON.stringify(BusOptions[i]["priority"]).toInt();
-    }
-  }
-
-  return 0;
 }
 
 void SetDeviceName() {
@@ -513,41 +487,21 @@ void SetDeviceName() {
 }
 
 void evaluateMode() {
-  if(actualType != prevType) {
-    actualColor.replace("#", "");
-    String hexstring = actualColor;
-    long number = (long) strtol( &hexstring[1], NULL, 16);
-    int r = number >> 16;
-    int g = number >> 8 & 0xFF;
-    int b = number & 0xFF;
-    if (actualType != "") {
-      setColor(strip.Color(r, g, b));
-    } else {
+    if (mode_preview && !mode_program) {
+      logger("The device is in preview.", "info-quiet");
       setColor(BLACK);
     }
-    
-    #if TALLY_EXTRA_OUTPUT
-    if (actualType == "preview") {
-      digitalWrite(led_program, HIGH);
-      digitalWrite (led_preview, LOW);
-      digitalWrite (led_aux, LOW);
-    } else if (actualType == "preview") {
-      digitalWrite(led_program, LOW);
-      digitalWrite (led_preview, HIGH);
-      digitalWrite (led_aux, LOW);
-    } else if (actualType == "aux") {
-      digitalWrite(led_program, LOW);
-      digitalWrite (led_preview, LOW);
-      digitalWrite (led_aux, HIGH);
-    } else {
-      digitalWrite(led_program, LOW);
-      digitalWrite (led_preview, LOW);
-      digitalWrite (led_aux, LOW);
+    else if (!mode_preview && mode_program) {
+      logger("The device is in program.", "info-quiet");
+      setColor(RED);
     }
-    #endif
-
-    logger("Device is in " + actualType + " (color " + actualColor + " r: " + String(r) + " g: " + String(g) + " b: " + String(b) + " - priority " + String(actualPriority) + ")", "info");
-
-    prevType = actualType;
-  }
+    else if (mode_preview && mode_program) {
+      logger("The device is in preview+program.", "info-quiet");
+      setColor(RED);
+    }
+    else {
+      logger("The device is in undefined mode.", "info-quiet");
+      setColor(BLACK);
+    }
 }
+
