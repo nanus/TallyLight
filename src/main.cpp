@@ -6,9 +6,7 @@
 #include <Adafruit_NeoPixel.h>
 #include <WiFiManager.h>
 #include <ArduinoOTA.h>
-#include <ESPmDNS.h>
 #include <Preferences.h>
-
 
 String listenerDeviceName = "x-tally-";
 
@@ -28,8 +26,6 @@ Adafruit_NeoPixel strip(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
 //   NEO_GRB     Pixels are wired for GRB bitstream (most NeoPixel products)
 //   NEO_RGB     Pixels are wired for RGB bitstream (v1 FLORA pixels, not v2)
 //   NEO_RGBW    Pixels are wired for RGBW bitstream (NeoPixel RGBW products)
-
-#define TALLY_EXTRA_OUTPUT false
 
 //Tally Arbiter Server
 char tallyarbiter_host[40] = "192.168.88.224"; //IP address of the Tally Arbiter Server
@@ -62,6 +58,7 @@ bool mode_program = false;
 WiFiManager wm; // global wm instance
 WiFiManagerParameter custom_field; // global param ( for non blocking w params )
 
+void showCPUDetails();
 void logger(String strLog, String strType);
 void connectToNetwork();
 String getParam(String name);
@@ -77,8 +74,6 @@ String strip_quot(String str);
 void socket_Reassign(String payload);
 void processTallyData();
 String getBusTypeById(String busId);
-String getBusColorById(String busId);
-int getBusPriorityById(String busId);
 void SetDeviceName();
 void evaluateMode();
 
@@ -89,8 +84,10 @@ void setup() {
   // Initialize the ESP32 object
   logger("Initializing ESP32.", "info-quiet");
 
-  //setCpuFrequencyMhz(80);    //Save battery by turning down the CPU clock
+  //setCpuFrequencyMhz(10);    //Save battery by turning down the CPU clock
   btStop();                 //Save battery by turning off BlueTooth
+
+  showCPUDetails();
 
   uint64_t chipid = ESP.getEfuseMac();
   listenerDeviceName += String((uint16_t)(chipid>>32)) + String((uint32_t)chipid);
@@ -168,6 +165,22 @@ void loop() {
   socket.loop();
 }
 
+void showCPUDetails(){
+  uint32_t cpu = 0;
+  cpu = getCpuFrequencyMhz();
+  Serial.print("CPU Freq = ");
+  Serial.print(cpu);
+  Serial.println(" MHz");
+  cpu = getXtalFrequencyMhz();
+  Serial.print("XTAL Freq = ");
+  Serial.print(cpu);
+  Serial.println(" MHz");
+  cpu = getApbFrequency();
+  Serial.print("APB Freq = ");
+  Serial.print(cpu);
+  Serial.println(" Hz");
+}
+
 void showDeviceInfo() {
   //displays the currently assigned device and tally data
   evaluateMode();
@@ -192,16 +205,12 @@ void connectToNetwork() {
   //reset settings - wipe credentials for testing
   //wm.resetSettings();
 
-  //const char* custom_radio_str = "<br/><label for='taHostIP'>Tally Arbiter Server</label><input type='text' name='taHostIP'>";
-  //new (&custom_field) WiFiManagerParameter(custom_radio_str); // custom html input
-
   WiFiManagerParameter custom_taServer("taHostIP", "Tally Arbiter Server", tallyarbiter_host, 40);
   WiFiManagerParameter custom_taPort("taHostPort", "Port", tallyarbiter_port, 6);
 
   wm.addParameter(&custom_taServer);
   wm.addParameter(&custom_taPort);
   
-  //wm.addParameter(&custom_field);
   wm.setSaveParamsCallback(saveParamCallback);
 
   // custom menu via array or vector
@@ -224,34 +233,6 @@ void connectToNetwork() {
     //if you get here you have connected to the WiFi
     logger("connected...yay :)", "info");
     networkConnected = true;
-
-    //TODO: fix MDNS discovery
-    /*
-    int nrOfServices = MDNS.queryService("tally-arbiter", "tcp");
-
-    if (nrOfServices == 0) {
-      logger("No server found.", "error");
-    } else {
-      logger("Number of servers found: ", "info");
-      Serial.print(nrOfServices);
-     
-      for (int i = 0; i < nrOfServices; i=i+1) {
- 
-        Serial.println("---------------");
-       
-        Serial.print("Hostname: ");
-        Serial.println(MDNS.hostname(i));
- 
-        Serial.print("IP address: ");
-        Serial.println(MDNS.IP(i));
- 
-        Serial.print("Port: ");
-        Serial.println(MDNS.port(i));
- 
-        Serial.println("---------------");
-      }
-    }
-    */
   }
 }
 
@@ -301,14 +282,13 @@ void WiFiEvent(WiFiEvent_t event) {
 void ws_emit(String event, const char *payload) {
   if (payload) {
     String msg = "[\"" + event + "\"," + payload + "]";
-    logger(msg,"info");
+    //logger(msg,"info");
     socket.sendEVENT(msg);
   } else {
     String msg = "[\"" + event + "\"]";
-    logger(msg, "info");
+    //logger(msg, "info");
     socket.sendEVENT(msg);
   }
-  logger("Socket message sent!", "info");
 }
 
 void connectToServer() {
@@ -482,6 +462,7 @@ void SetDeviceName() {
   }
   preferences.begin("tally-arbiter", false);
   preferences.putString("devicename", DeviceName);
+  preferences.putString("deviceid", DeviceId);
   preferences.end();
   evaluateMode();
 }
